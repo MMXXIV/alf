@@ -1,8 +1,8 @@
 import os
-import re
 import asyncio
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
+from telethon.tl.types import PeerChannel
 
 # Load environment variables from .env file
 load_dotenv()
@@ -10,12 +10,9 @@ load_dotenv()
 api_id = os.getenv('API_ID')
 api_hash = os.getenv('API_HASH')
 
-# Chat ID or username to send the detected smart contracts
+# Chat ID or username to send the detected messages
 target_chat_id = os.getenv('TARGET_CHAT_ID')
 monitor_channel = os.getenv('MONITOR_CHANNEL')
-
-# Regular expression to match any sequence of exactly 44 characters without spaces (for Solana smart contracts)
-smart_contract_pattern = re.compile(r'\S{44}')
 
 # Initialize TelegramClient with your personal session
 client = TelegramClient('user_session', api_id, api_hash)
@@ -26,49 +23,57 @@ COLOR_YELLOW = "\033[93m"
 COLOR_RED = "\033[91m"
 COLOR_RESET = "\033[0m"
 
-# Function to detect smart contract and send it to the target chat
+# Function to forward the message along with the sender's name or channel title
 async def handle_new_message(event):
     message_text = event.message.message  # Get the message text
+    sender = await event.get_sender()  # Get the sender of the message
 
-    if message_text:
-        # Print message for debugging
-        print(f"{COLOR_YELLOW}New message received: {message_text}{COLOR_RESET}")
-
-        # Strip any surrounding whitespace or newlines from the message
-        message_text = message_text.strip()
-
-        # Look for any chain of exactly 44 characters without spaces in the message
-        smart_contracts = smart_contract_pattern.findall(message_text)
-        if smart_contracts:
-            for smart_contract in smart_contracts:
-                print(f"{COLOR_GREEN}Detected Smart Contract: {smart_contract}{COLOR_RESET}")
-                try:
-                    # Resolve the target chat/user entity using get_entity
-                    target_entity = await client.get_entity(target_chat_id)
-                    
-                    # Send the smart contract to the resolved entity (if needed)
-                    await client.send_message(target_entity, f"{smart_contract}")
-                    
-                    # Additional: Send the "Buy 1 SOL" command to the bot
-                    await asyncio.sleep(0.5)  # Short delay to simulate human interaction
-                    # await client.send_message(target_entity, "1 SOL")  # Select 1 SOL
-                    
-                    print(f"{COLOR_GREEN}Smart contract sent successfully and triggered 'Buy 1 SOL' to {target_chat_id}{COLOR_RESET}")
-                except Exception as e:
-                    print(f"{COLOR_RED}Failed to send smart contract or execute buy: {e}{COLOR_RESET}")
+    if message_text and sender:
+        # Check if the sender is a user or a channel
+        if hasattr(sender, 'first_name'):  # If it's a user
+            sender_name = sender.first_name
+            if sender.username:
+                sender_name += f" (@{sender.username})"
+        elif hasattr(sender, 'title'):  # If it's a channel
+            sender_name = sender.title  # Use the channel title
         else:
-            # Log regular messages (in yellow)
-            print(f"{COLOR_YELLOW}Regular message received, no smart contract detected.{COLOR_RESET}")
+            sender_name = "Unknown Sender"
+
+        # Print message for debugging
+        print(f"{COLOR_YELLOW}New message from {sender_name}: {message_text}{COLOR_RESET}")
+
+        # Compose the message to forward (including the sender's name)
+        forward_message = f"Message from {sender_name}:\n\n{message_text}"
+
+        try:
+            # Resolve the target chat/user entity using get_entity
+            target_entity = await client.get_entity(target_chat_id)
+            
+            # Forward the message along with the sender's name
+            await client.send_message(target_entity, forward_message)
+            
+            print(f"{COLOR_GREEN}Message from {sender_name} forwarded successfully to {target_chat_id}{COLOR_RESET}")
+        except Exception as e:
+            print(f"{COLOR_RED}Failed to forward message from {sender_name}: {e}{COLOR_RESET}")
+    else:
+        # Log if there is no text in the message (e.g., media, stickers, etc.)
+        print(f"{COLOR_YELLOW}Received a message with no text or sender information.{COLOR_RESET}")
 
 # Function to fetch the channel ID based on the username
 async def fetch_channel_id():
-    channel_username = monitor_channel
+    channel_identifier = monitor_channel  # Can be username, invite link, or channel ID
     try:
-        entity = await client.get_entity(channel_username)
-        print(f"Monitoring messages from channel: {entity.title} (ID: {entity.id})")
-        return entity.id  # Return the channel ID
+        # Check if channel_identifier is numeric (indicating a raw channel ID)
+        if channel_identifier.isdigit():
+            entity = PeerChannel(int(channel_identifier))
+            print(f"Monitoring messages from channel ID: {channel_identifier}")
+        else:
+            # Fetch the entity using the username or invite link
+            entity = await client.get_entity(channel_identifier)
+            print(f"Monitoring messages from channel: {entity.title} (ID: {entity.id})")
+        return entity  # Return the channel entity
     except Exception as e:
-        print(f"{COLOR_RED}Error: Unable to fetch channel ID for {channel_username}. Details: {e}{COLOR_RESET}")
+        print(f"{COLOR_RED}Error: Unable to fetch channel using identifier {channel_identifier}. Details: {e}{COLOR_RESET}")
         return None
 
 # Run the bot using the current event loop
@@ -80,7 +85,7 @@ async def main():
         print(f"{COLOR_RED}Could not fetch channel ID. Exiting.{COLOR_RESET}")
         return
     
-    # Modify the NewMessage listener to only listen to this channel
+    # Modify the NewMessage listener to listen to this channel
     @client.on(events.NewMessage(chats=channel_id))
     async def new_message_listener(event):
         await handle_new_message(event)
@@ -93,7 +98,8 @@ if __name__ == "__main__":
     client.start()
 
     loop = asyncio.get_event_loop()
-    if loop is not None and loop.is_running():
-        loop.create_task(main())
-    else:
-        loop.run_until_complete(main())
+if loop is not None and loop.is_running():
+    loop.create_task(main())
+else:
+    loop.run_until_complete(main())
+
